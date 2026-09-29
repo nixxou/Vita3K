@@ -35,6 +35,11 @@ struct Config {
     std::optional<std::string> pup_path;
     std::optional<bool> system_music;
 
+    // --config-override: per-app settings as JSON for the app launched from the command line, used instead
+    // of its custom config and never saved. config_override_app is the app it applies to.
+    std::optional<std::string> config_override;
+    std::string config_override_app;
+
     // Setting not present in the YAML file
     fs::path config_path = {};
     std::string app_args;

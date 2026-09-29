@@ -16,6 +16,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include <config/functions.h>
+#include <config/settings.h>
 #include <config/state.h>
 #include <config/version.h>
 #include <input/physical_key.h>
@@ -156,6 +157,10 @@ static void check_members(Config &self, const Config &rhs) {
         self.pkg_path = rhs.pkg_path;
     if (rhs.pkg_zrif.has_value())
         self.pkg_zrif = rhs.pkg_zrif;
+    if (rhs.config_override.has_value())
+        self.config_override = rhs.config_override;
+    if (!rhs.config_override_app.empty())
+        self.config_override_app = rhs.config_override_app;
 
     if (!rhs.config_path.empty())
         self.config_path = rhs.config_path;
@@ -381,6 +386,11 @@ ExitCode init_config(Config &cfg, int argc, char **argv, const Root &root_paths,
     config->add_flag("--fullscreen,-F", command_line.fullscreen, "Start the emulator in fullscreen mode.")
         ->group("YML");
 
+    config->add_option("--config-override", command_line.config_override, "Per-app settings for the app launched from the command line, as JSON shaped like its custom config.
+The app's custom config is ignored, global settings apply to the rest, nothing is saved.
+Example: --config-override \"{\\\"gpu\\\": {\\\"resolution-multiplier\\\": 3}}\"")
+        ->group("YML");
+
     std::vector<std::string> lle_modules{};
     config->add_option("--lle-modules,-m", lle_modules, "Load given (decrypted) OS modules from disk.\nSeparate by commas to specify multiple modules. Full path and extension should not be included, the following are assumed: vs0:sys/external/<name>.suprx\nExample: --lle-modules libscemp4,libngs")
         ->group("Modules");
@@ -449,6 +459,21 @@ ExitCode init_config(Config &cfg, int argc, char **argv, const Root &root_paths,
         } else {
             command_line.lle_modules = std::move(lle_modules);
         }
+    }
+
+    if (command_line.config_override.has_value()) {
+        if (!command_line.run_app_path && !command_line.content_path) {
+            LOG_ERROR("--config-override only applies to an app launched from the command line (--installed-path or a content path).");
+            return InitConfigFailed;
+        }
+        std::string error;
+        Config::CurrentConfig parsed;
+        if (!apply_config_override(parsed, *command_line.config_override, &error)) {
+            LOG_ERROR("--config-override is not valid JSON: {}", error);
+            return InitConfigFailed;
+        }
+        if (command_line.run_app_path)
+            command_line.config_override_app = *command_line.run_app_path;
     }
 
     // Merge configurations

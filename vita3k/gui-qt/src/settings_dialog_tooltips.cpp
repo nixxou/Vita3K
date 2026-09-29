@@ -94,6 +94,8 @@ QString SettingsDialogTooltips::category_summary(SettingsTab tab) const {
         return tr("Configure network related settings here.");
     case SettingsTab::Debug:
         return tr("Internal diagnostics, GPU debugging, and watch controls live here. These settings are mainly for developers.");
+    case SettingsTab::CommandLine:
+        return tr("Launch this game from the command line with the settings being edited, without saving them.");
     default:
         return default_description;
     }

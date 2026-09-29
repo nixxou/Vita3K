@@ -246,6 +246,8 @@ int main(int argc, char *argv[]) {
 
         if (!boot_title_id.empty()) {
             cfg.run_app_path = boot_title_id;
+            if (emuenv.cfg.config_override)
+                emuenv.cfg.config_override_app = boot_title_id;
             LOG_INFO("Content installed, will auto-boot: {}", boot_title_id);
         }
 

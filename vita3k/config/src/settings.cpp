@@ -23,6 +23,7 @@
 #include <util/vector_utils.h>
 
 #include <pugixml.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -347,6 +348,85 @@ private:
     const CustomConfigOverrides *overrides;
 };
 
+// JSON (read as YAML, which accepts it) for --config-override. A value of the wrong type is skipped.
+template <typename T>
+void read_json_value(const YAML::Node &node, T &out) {
+    try {
+        out = node.as<T>();
+    } catch (const YAML::Exception &) {
+        LOG_WARN("--config-override: ignoring a value that is not the expected type.");
+    }
+}
+
+void read_json_value(const YAML::Node &node, std::string &out) {
+    if (!node.IsScalar())
+        return;
+    const auto value = node.as<std::string>();
+    if (!value.empty())
+        out = value;
+}
+
+template <typename T>
+void read_json_value(const YAML::Node &node, std::vector<T> &out) {
+    if (!node.IsSequence())
+        return;
+    std::vector<T> values;
+    for (const auto &item : node) {
+        T value{};
+        try {
+            value = item.as<T>();
+        } catch (const YAML::Exception &) {
+            continue;
+        }
+        values.push_back(value);
+    }
+    if constexpr (std::is_same_v<T, uint64_t>) {
+        if (values.empty())
+            values.push_back(4);
+    }
+    out = std::move(values);
+}
+
+std::string json_string(const std::string &value) {
+    std::string out = "\"";
+    for (const char c : value) {
+        if (c == '"' || c == '\\')
+            out += '\\';
+        out += c;
+    }
+    return out + '"';
+}
+
+std::string json_value(bool value) {
+    return value ? "true" : "false";
+}
+
+std::string json_value(int value) {
+    return std::to_string(value);
+}
+
+std::string json_value(float value) {
+    return fmt::format("{}", value);
+}
+
+std::string json_value(const std::string &value) {
+    return json_string(value);
+}
+
+template <typename T>
+std::string json_value(const std::vector<T> &value) {
+    std::string out = "[";
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (i)
+            out += ',';
+        if constexpr (std::is_same_v<T, std::string>)
+            out += json_string(value[i]);
+        else
+            out += std::to_string(value[i]);
+    }
+    return out + ']';
+}
+
 bool load_custom_config_doc(pugi::xml_document &doc, const fs::path &custom_cfg_path) {
     return fs::exists(custom_cfg_path) && doc.load_file(custom_cfg_path.c_str()) && !doc.child("config").empty();
 }
@@ -397,6 +477,58 @@ std::set<std::string> get_custom_config_keys(const fs::path &config_path, const 
     });
 
     return keys;
+}
+
+bool apply_config_override(Config::CurrentConfig &out, const std::string &json, std::string *error) {
+    YAML::Node root;
+    try {
+        root = YAML::Load(json);
+    } catch (const YAML::Exception &e) {
+        if (error)
+            *error = e.what();
+        return false;
+    }
+    if (root.IsNull())
+        return true;
+    if (!root.IsMap()) {
+        if (error)
+            *error = "expected an object like {\"gpu\": {\"resolution-multiplier\": 3}}";
+        return false;
+    }
+
+    const YAML::Node &const_root = root; // const lookups never insert
+    for_each_custom_field(out, out, [&](const char *section, const char *name, auto &value, auto &) {
+        const YAML::Node section_node = const_root[section];
+        // A missing key gives an invalid node: IsDefined() is the only safe first question.
+        if (!section_node.IsDefined() || !section_node.IsMap())
+            return;
+        const YAML::Node value_node = section_node[name];
+        if (value_node.IsDefined() && !value_node.IsNull())
+            read_json_value(value_node, value);
+    });
+
+    return true;
+}
+
+std::string custom_config_to_json(const Config::CurrentConfig &cc, const std::vector<std::string> &keys) {
+    std::string out = "{";
+    std::string current_section;
+    for_each_custom_field(cc, cc, [&](const char *section, const char *name, const auto &value, const auto &) {
+        if (!std::ranges::contains(keys, custom_key(section, name)))
+            return;
+        if (current_section != section) {
+            if (!current_section.empty())
+                out += "},";
+            out += json_string(section) + ":{";
+            current_section = section;
+        } else {
+            out += ',';
+        }
+        out += json_string(name) + ':' + json_value(value);
+    });
+    if (!current_section.empty())
+        out += '}';
+    return out + '}';
 }
 
 void copy_custom_config_keys(Config::CurrentConfig &dst, const Config::CurrentConfig &src, const std::vector<std::string> &keys) {
@@ -481,9 +613,15 @@ bool has_custom_config(const fs::path &config_path, const std::string &app_path)
     return fs::exists(get_custom_config_path(config_path, app_path));
 }
 
-void set_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path) {
+void set_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool use_config_override) {
     copy_global_to_current(cfg.current_config, cfg);
-    if (!app_path.empty())
+    if (app_path.empty())
+        return;
+
+    // The command line override replaces the app's custom config entirely.
+    if (use_config_override && cfg.config_override && app_path == cfg.config_override_app)
+        apply_config_override(cfg.current_config, *cfg.config_override);
+    else
         load_custom_config(cfg.current_config, config_path, app_path);
 }
 

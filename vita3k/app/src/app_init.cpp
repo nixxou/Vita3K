@@ -186,7 +186,7 @@ static bool applies_to_active_profile(const EmuEnvState &emuenv, const std::stri
 static Config::CurrentConfig get_effective_current_config(const Config &cfg, const fs::path &config_path, const std::string &app_path) {
     Config effective_cfg;
     effective_cfg = cfg;
-    config::set_current_config(effective_cfg, config_path, app_path);
+    config::set_current_config(effective_cfg, config_path, app_path, true);
     return effective_cfg.current_config;
 }
 
@@ -233,8 +233,12 @@ static Config::CurrentConfig get_runtime_current_config_after_save(
     return runtime_current;
 }
 
+bool config_override_active(const EmuEnvState &emuenv) {
+    return emuenv.cfg.config_override && !emuenv.io.app_path.empty() && emuenv.io.app_path == emuenv.cfg.config_override_app;
+}
+
 void set_current_config(EmuEnvState &emuenv, const std::string &app_path) {
-    config::set_current_config(emuenv.cfg, emuenv.config_path, app_path);
+    config::set_current_config(emuenv.cfg, emuenv.config_path, app_path, true);
     set_backend_renderer(emuenv, emuenv.cfg.current_config.backend_renderer);
     emuenv.audio.set_global_volume(emuenv.cfg.current_config.audio_volume / 100.f);
     lang::set_locale(emuenv.cfg.current_config.sys_lang);

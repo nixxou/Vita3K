@@ -78,6 +78,8 @@ SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_
     const config::CustomConfigOverrides *overrides = nullptr);
 SettingsCommitResult delete_custom_settings(EmuEnvState &emuenv, const std::string &scope_app_path);
 void set_current_config(EmuEnvState &emuenv, const std::string &app_path);
+// True while the running app is the one launched with --config-override.
+bool config_override_active(const EmuEnvState &emuenv);
 void destroy(EmuEnvState &emuenv);
 
 bool init_apps_list(EmuEnvState &emuenv);

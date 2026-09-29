@@ -2105,6 +2105,13 @@ void MainWindow::save_config() {
 }
 
 void MainWindow::save_config(const Config &desired_cfg) {
+    // A game launched with --config-override saves nothing: the change only applies to this run.
+    if (m_game_window && app::config_override_active(emuenv)) {
+        emuenv.cfg.current_config = desired_cfg.current_config;
+        app::apply_runtime_settings(emuenv);
+        return;
+    }
+
     const std::string scope_app_path = (m_game_window && config::has_custom_config(emuenv.config_path, emuenv.io.app_path))
         ? emuenv.io.app_path
         : std::string();

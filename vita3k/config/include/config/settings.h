@@ -53,10 +53,16 @@ bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentCo
     const CustomConfigOverrides *overrides = nullptr);
 std::set<std::string> get_custom_config_keys(const fs::path &config_path, const std::string &app_path);
 void copy_custom_config_keys(Config::CurrentConfig &dst, const Config::CurrentConfig &src, const std::vector<std::string> &keys);
+
+// JSON shaped like a custom config: {"gpu": {"resolution-multiplier": 3}}. Unknown keys and values of the
+// wrong type are skipped; false (with error set) only when the text does not parse or is not an object.
+bool apply_config_override(Config::CurrentConfig &out, const std::string &json, std::string *error = nullptr);
+std::string custom_config_to_json(const Config::CurrentConfig &cc, const std::vector<std::string> &keys);
 bool delete_custom_config(const fs::path &config_path, const std::string &app_path);
 int delete_all_custom_configs(const fs::path &config_path);
 bool has_custom_config(const fs::path &config_path, const std::string &app_path);
-void set_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path);
+// With use_config_override, the app launched with --config-override gets it instead of its custom config.
+void set_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool use_config_override = false);
 void copy_current_config_to_global(Config &cfg);
 void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing = false,
     const CustomConfigOverrides *overrides = nullptr);

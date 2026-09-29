@@ -39,6 +39,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QComboBox>
@@ -49,6 +50,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
@@ -67,6 +69,28 @@
 #include <algorithm>
 
 namespace {
+
+// Quotes one argument the way CommandLineToArgvW and the C runtime split a Windows command line.
+QString quote_argument(const QString &arg) {
+    QString out = QStringLiteral("\"");
+    int backslashes = 0;
+    for (const QChar c : arg) {
+        if (c == QLatin1Char('\\')) {
+            ++backslashes;
+            continue;
+        }
+        if (c == QLatin1Char('"')) {
+            out += QString(backslashes * 2 + 1, QLatin1Char('\\'));
+            out += c;
+        } else {
+            out += QString(backslashes, QLatin1Char('\\'));
+            out += c;
+        }
+        backslashes = 0;
+    }
+    out += QString(backslashes * 2, QLatin1Char('\\'));
+    return out + QLatin1Char('"');
+}
 
 int first_visible_category(const QListWidget *list, int preferred) {
     const int count = list->count();
@@ -194,6 +218,7 @@ SettingsDialog::SettingsDialog(EmuEnvState &emuenv,
         m_ui->gb_adhoc->setVisible(false);
 
         setup_override_groups();
+        setup_command_line_tab();
     }
 
     const int selected_tab = first_visible_category(m_ui->settingsCategory, m_initial_tab);
@@ -1548,6 +1573,66 @@ config::CustomConfigOverrides SettingsDialog::build_overrides() const {
             overrides[key] = group.check->isChecked();
     }
     return overrides;
+}
+
+void SettingsDialog::setup_command_line_tab() {
+    m_command_line_page = new QWidget(m_ui->tab_widget_settings);
+    auto *page_layout = new QVBoxLayout(m_command_line_page);
+
+    auto *box = new QGroupBox(tr("Launch Arguments"), m_command_line_page);
+    auto *box_layout = new QVBoxLayout(box);
+
+    auto *explanation = new QLabel(tr("To start this game with the settings of this window without saving them, pass these "
+                                      "arguments to Vita3K, for example: Vita3K.exe followed by the line below.\n\n"
+                                      "Only the sections checked as Override are included. Everything else comes from the global "
+                                      "settings, and the custom config saved for this game is ignored.\n\n"
+                                      "The line follows the edits in this window, even unsaved ones: you can copy it, then close "
+                                      "this window without saving."),
+        box);
+    explanation->setWordWrap(true);
+    box_layout->addWidget(explanation);
+
+    auto *row = new QHBoxLayout();
+    m_command_line = new QLineEdit(box);
+    m_command_line->setReadOnly(true);
+    auto *copy_button = new QPushButton(tr("Copy"), box);
+    connect(copy_button, &QPushButton::clicked, this, [this] {
+        QApplication::clipboard()->setText(m_command_line->text());
+    });
+    row->addWidget(m_command_line, 1);
+    row->addWidget(copy_button);
+    box_layout->addLayout(row);
+
+    page_layout->addWidget(box);
+    page_layout->addStretch(1);
+
+    m_ui->tab_widget_settings->addTab(m_command_line_page, tr("Command Line"));
+    auto *item = new QListWidgetItem(tr("Command Line"), m_ui->settingsCategory);
+    item->setSizeHint(QSize(0, 34));
+
+    connect(m_ui->tab_widget_settings, &QTabWidget::currentChanged, this, [this](int index) {
+        if (m_ui->tab_widget_settings->widget(index) == m_command_line_page)
+            update_command_line();
+    });
+}
+
+void SettingsDialog::update_command_line() {
+    if (!m_command_line)
+        return;
+
+    Config desired;
+    build_desired_config(desired);
+
+    std::vector<std::string> keys;
+    for (const auto &group : m_override_groups) {
+        if (group.check->isChecked())
+            keys.insert(keys.end(), group.keys.begin(), group.keys.end());
+    }
+
+    const auto json = QString::fromStdString(config::custom_config_to_json(desired.current_config, keys));
+    m_command_line->setText(QStringLiteral("-r %1 --config-override %2")
+            .arg(quote_argument(QString::fromStdString(m_app_path)), quote_argument(json)));
+    m_command_line->setCursorPosition(0);
 }
 
 void SettingsDialog::set_pending_vita_fs_path(const fs::path &vita_fs_path) {

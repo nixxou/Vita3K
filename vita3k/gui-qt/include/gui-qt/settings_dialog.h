@@ -31,6 +31,7 @@ struct EmuEnvState;
 class GuiSettings;
 class QCheckBox;
 class QGroupBox;
+class QLineEdit;
 class SettingsDialogTooltips;
 class ThemeManager;
 
@@ -45,6 +46,7 @@ enum class SettingsTab : int {
     Interface,
     Network,
     Debug,
+    CommandLine, // custom config only, added at runtime
 };
 
 namespace Ui {
@@ -114,6 +116,8 @@ private:
     void reset_override_group_to_global(int index);
     void place_override_check(int index);
     config::CustomConfigOverrides build_overrides() const;
+    void setup_command_line_tab();
+    void update_command_line();
     void set_pending_vita_fs_path(const fs::path &vita_fs_path);
     void set_description(QWidget *tab, const QString &title, const QString &text);
     void add_stylesheets(const QString &preferred_name = {});
@@ -133,6 +137,8 @@ private:
         std::vector<std::string> keys;
     };
     std::vector<OverrideGroup> m_override_groups;
+    QWidget *m_command_line_page = nullptr;
+    QLineEdit *m_command_line = nullptr;
 
     EmuEnvState &emuenv;
     std::shared_ptr<GuiSettings> m_gui_settings;
