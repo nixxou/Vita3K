@@ -1,0 +1,90 @@
+name: Windows x64
+
+# Fork-only shortcut: the desktop windows-x64 job of c-cpp.yml, alone.
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+env:
+  BUILD_CONFIG: Release
+  QT_VERSION: '6.11.0'
+  SCCACHE_GHA_ENABLED: "true"
+  PLATFORM: windows-x64
+  CMAKE_PRESET: ci-windows-msvc
+  VCPKG_ROOT: C:\vcpkg
+  VCPKG_TRIPLET: x64-windows-static-md
+  CACHE_PATH: C:\vcpkg-binary-cache
+
+jobs:
+  windows-x64:
+    name: Desktop (windows-x64)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Restore cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CACHE_PATH }}
+          key: cache-windows-x64-${{ env.BUILD_CONFIG }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.ci/**', '.github/workflows/windows-x64.yml', 'vcpkg.json') }}
+          restore-keys: |
+            cache-windows-x64-${{ env.BUILD_CONFIG }}-
+
+      - name: Set up build environment
+        shell: pwsh
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ env.CACHE_PATH }}
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\.ci\setup-windows-msvc.ps1 -VcpkgTriplet '${{ env.VCPKG_TRIPLET }}'
+
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x86_64
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          disable_annotations: true
+
+      - name: Install Qt 6.11.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtmultimedia
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+          install-deps: 'false'
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@f383b3c7d9658e881bd8ce8810057393bd934ee1
+
+      - name: Build desktop target
+        shell: bash
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ env.CACHE_PATH }}
+        run: bash ./.ci/build-desktop.sh --preset ${{ env.CMAKE_PRESET }} --config ${{ env.BUILD_CONFIG }}
+
+      - name: Compute artifact paths
+        shell: bash
+        run: |
+          echo "ARTIFACT_NAME=vita3k-$(git rev-parse --short HEAD)-${{ env.PLATFORM }}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_DIR=artifacts/vita3k-$(git rev-parse --short HEAD)-${{ env.PLATFORM }}" >> "$GITHUB_ENV"
+
+      - name: Stage desktop artifact
+        shell: bash
+        run: bash ./.ci/package-desktop.sh --platform ${{ env.PLATFORM }} --preset ${{ env.CMAKE_PRESET }} --config ${{ env.BUILD_CONFIG }} --output-dir "${{ env.ARTIFACT_DIR }}"
+
+      - name: Print sccache statistics
+        run: sccache --show-stats
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_DIR }}
