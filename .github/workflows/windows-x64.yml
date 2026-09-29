@@ -11,7 +11,7 @@ env:
   BUILD_CONFIG: Release
   QT_VERSION: '6.11.0'
   SCCACHE_GHA_ENABLED: "true"
-  PLATFORM: windows-x64
+  VITA3K_PLATFORM: windows-x64
   CMAKE_PRESET: ci-windows-msvc
   VCPKG_ROOT: C:\vcpkg
   VCPKG_TRIPLET: x64-windows-static-md
@@ -73,12 +73,12 @@ jobs:
       - name: Compute artifact paths
         shell: bash
         run: |
-          echo "ARTIFACT_NAME=vita3k-$(git rev-parse --short HEAD)-${{ env.PLATFORM }}" >> "$GITHUB_ENV"
-          echo "ARTIFACT_DIR=artifacts/vita3k-$(git rev-parse --short HEAD)-${{ env.PLATFORM }}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=vita3k-$(git rev-parse --short HEAD)-${{ env.VITA3K_PLATFORM }}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_DIR=artifacts/vita3k-$(git rev-parse --short HEAD)-${{ env.VITA3K_PLATFORM }}" >> "$GITHUB_ENV"
 
       - name: Stage desktop artifact
         shell: bash
-        run: bash ./.ci/package-desktop.sh --platform ${{ env.PLATFORM }} --preset ${{ env.CMAKE_PRESET }} --config ${{ env.BUILD_CONFIG }} --output-dir "${{ env.ARTIFACT_DIR }}"
+        run: bash ./.ci/package-desktop.sh --platform ${{ env.VITA3K_PLATFORM }} --preset ${{ env.CMAKE_PRESET }} --config ${{ env.BUILD_CONFIG }} --output-dir "${{ env.ARTIFACT_DIR }}"
 
       - name: Print sccache statistics
         run: sccache --show-stats
