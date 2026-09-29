@@ -25,6 +25,7 @@
 #include <pugixml.hpp>
 
 #include <algorithm>
+#include <type_traits>
 
 namespace config {
 
@@ -151,6 +152,29 @@ static fs::path get_custom_config_path(const fs::path &config_path, const std::s
     return config_path / "config" / fmt::format("config_{}.xml", app_path);
 }
 
+// A custom config only overrides what it names: an absent attribute (or list) keeps the global value.
+static void read_attr(const pugi::xml_node &node, const char *name, bool &out) {
+    if (const auto attr = node.attribute(name))
+        out = attr.as_bool();
+}
+
+static void read_attr(const pugi::xml_node &node, const char *name, int &out) {
+    if (const auto attr = node.attribute(name))
+        out = attr.as_int();
+}
+
+static void read_attr(const pugi::xml_node &node, const char *name, float &out) {
+    if (const auto attr = node.attribute(name))
+        out = attr.as_float();
+}
+
+// An empty string is never a valid value for these settings, so it inherits too.
+static void read_attr(const pugi::xml_node &node, const char *name, std::string &out) {
+    const auto attr = node.attribute(name);
+    if (attr && *attr.as_string())
+        out = attr.as_string();
+}
+
 bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path, const std::string &app_path) {
     if (app_path.empty())
         return false;
@@ -168,158 +192,194 @@ bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path,
 
     const auto config_child = doc.child("config");
 
-    if (!config_child.child("core").empty()) {
-        const auto core = config_child.child("core");
-        out.modules_mode = core.attribute("modules-mode").as_int();
+    const auto core = config_child.child("core");
+    read_attr(core, "modules-mode", out.modules_mode);
+    if (const auto lle = core.child("lle-modules")) {
         out.lle_modules.clear();
-        for (const auto &m : core.child("lle-modules"))
+        for (const auto &m : lle)
             out.lle_modules.emplace_back(m.text().as_string());
     }
 
-    if (!config_child.child("cpu").empty())
-        out.cpu_opt = config_child.child("cpu").attribute("cpu-opt").as_bool();
+    read_attr(config_child.child("cpu"), "cpu-opt", out.cpu_opt);
 
-    if (!config_child.child("gpu").empty()) {
-        const auto gpu = config_child.child("gpu");
-        out.backend_renderer = gpu.attribute("backend-renderer").as_string();
-        out.gpu_idx = gpu.attribute("gpu-idx").as_int();
+    const auto gpu = config_child.child("gpu");
+    read_attr(gpu, "backend-renderer", out.backend_renderer);
+    read_attr(gpu, "gpu-idx", out.gpu_idx);
 #ifdef __ANDROID__
-        out.custom_driver_name = gpu.attribute("custom-driver-name").as_string();
+    if (const auto attr = gpu.attribute("custom-driver-name"))
+        out.custom_driver_name = attr.as_string();
 #endif
-        out.high_accuracy = gpu.attribute("high-accuracy").as_bool();
-        out.resolution_multiplier = gpu.attribute("resolution-multiplier").as_float();
-        out.disable_surface_sync = gpu.attribute("disable-surface-sync").as_bool();
-        out.screen_filter = gpu.attribute("screen-filter").as_string();
-        out.memory_mapping = gpu.attribute("memory-mapping").as_string();
-        out.v_sync = gpu.attribute("v-sync").as_bool();
-        out.anisotropic_filtering = gpu.attribute("anisotropic-filtering").as_int();
-        out.async_pipeline_compilation = gpu.attribute("async-pipeline-compilation").as_bool();
-        out.import_textures = gpu.attribute("import-textures").as_bool();
-        out.export_textures = gpu.attribute("export-textures").as_bool();
-        out.export_as_png = gpu.attribute("export-as-png").as_bool();
-        out.fps_hack = gpu.attribute("fps-hack").as_bool();
-        out.shader_cache = gpu.attribute("shader-cache").as_bool(true);
-        out.spirv_shader = gpu.attribute("spirv-shader").as_bool();
-        out.texture_cache = gpu.attribute("texture-cache").as_bool(true);
-    }
+    read_attr(gpu, "high-accuracy", out.high_accuracy);
+    read_attr(gpu, "resolution-multiplier", out.resolution_multiplier);
+    read_attr(gpu, "disable-surface-sync", out.disable_surface_sync);
+    read_attr(gpu, "screen-filter", out.screen_filter);
+    read_attr(gpu, "memory-mapping", out.memory_mapping);
+    read_attr(gpu, "v-sync", out.v_sync);
+    read_attr(gpu, "anisotropic-filtering", out.anisotropic_filtering);
+    read_attr(gpu, "async-pipeline-compilation", out.async_pipeline_compilation);
+    read_attr(gpu, "import-textures", out.import_textures);
+    read_attr(gpu, "export-textures", out.export_textures);
+    read_attr(gpu, "export-as-png", out.export_as_png);
+    read_attr(gpu, "fps-hack", out.fps_hack);
+    read_attr(gpu, "shader-cache", out.shader_cache);
+    read_attr(gpu, "spirv-shader", out.spirv_shader);
+    read_attr(gpu, "texture-cache", out.texture_cache);
 
-    if (!config_child.child("audio").empty()) {
-        const auto audio = config_child.child("audio");
-        out.audio_backend = audio.attribute("audio-backend").as_string();
-        out.audio_volume = audio.attribute("audio-volume").as_int();
-        out.ngs_enable = audio.attribute("enable-ngs").as_bool();
-    }
+    const auto audio = config_child.child("audio");
+    read_attr(audio, "audio-backend", out.audio_backend);
+    read_attr(audio, "audio-volume", out.audio_volume);
+    read_attr(audio, "enable-ngs", out.ngs_enable);
 
-    if (!config_child.child("system").empty()) {
-        const auto sys = config_child.child("system");
-        out.pstv_mode = sys.attribute("pstv-mode").as_bool();
-        out.sys_button = sys.attribute("sys-button").as_int(static_cast<int>(SCE_SYSTEM_PARAM_ENTER_BUTTON_CROSS));
-        out.sys_lang = sys.attribute("sys-lang").as_int(static_cast<int>(SCE_SYSTEM_PARAM_LANG_ENGLISH_US));
-        out.sys_date_format = sys.attribute("sys-date-format").as_int(static_cast<int>(SCE_SYSTEM_PARAM_DATE_FORMAT_MMDDYYYY));
-        out.sys_time_format = sys.attribute("sys-time-format").as_int(static_cast<int>(SCE_SYSTEM_PARAM_TIME_FORMAT_12HOUR));
+    const auto sys = config_child.child("system");
+    read_attr(sys, "pstv-mode", out.pstv_mode);
+    read_attr(sys, "sys-button", out.sys_button);
+    read_attr(sys, "sys-lang", out.sys_lang);
+    read_attr(sys, "sys-date-format", out.sys_date_format);
+    read_attr(sys, "sys-time-format", out.sys_time_format);
+    if (const auto ime = sys.child("ime-langs")) {
         out.ime_langs.clear();
-        for (const auto &lang : sys.child("ime-langs"))
+        for (const auto &lang : ime)
             out.ime_langs.push_back(std::stoull(lang.text().as_string()));
         if (out.ime_langs.empty())
             out.ime_langs.push_back(4);
     }
 
-    if (!config_child.child("emulator").empty()) {
-        const auto emu = config_child.child("emulator");
-        out.file_loading_delay = emu.attribute("file-loading-delay").as_int();
-        out.stretch_the_display_area = emu.attribute("stretch-the-display-area").as_bool();
-        out.fullscreen_hd_res_pixel_perfect = emu.attribute("fullscreen-hd-res-pixel-perfect").as_bool();
-    }
+    const auto emu = config_child.child("emulator");
+    read_attr(emu, "file-loading-delay", out.file_loading_delay);
+    read_attr(emu, "stretch-the-display-area", out.stretch_the_display_area);
+    read_attr(emu, "fullscreen-hd-res-pixel-perfect", out.fullscreen_hd_res_pixel_perfect);
 
-    if (!config_child.child("debug").empty()) {
-        const auto dbg = config_child.child("debug");
-        out.log_active_shaders = dbg.attribute("log-active-shaders").as_bool();
-        out.log_uniforms = dbg.attribute("log-uniforms").as_bool();
-        out.color_surface_debug = dbg.attribute("color-surface-debug").as_bool();
-        out.validation_layer = dbg.attribute("validation-layer").as_bool(true);
-    }
+    const auto dbg = config_child.child("debug");
+    read_attr(dbg, "log-active-shaders", out.log_active_shaders);
+    read_attr(dbg, "log-uniforms", out.log_uniforms);
+    read_attr(dbg, "color-surface-debug", out.color_surface_debug);
+    read_attr(dbg, "validation-layer", out.validation_layer);
 
-    if (!config_child.child("network").empty())
-        out.psn_signed_in = config_child.child("network").attribute("psn-signed-in").as_bool();
+    read_attr(config_child.child("network"), "psn-signed-in", out.psn_signed_in);
 
     return true;
 }
 
-bool save_custom_config(const Config::CurrentConfig &cc, const fs::path &config_path, const std::string &app_path) {
+namespace {
+
+// Edits a custom config in place: a setting is written when the file already names it (the user
+// pinned it) or when it differs from the global value; everything else stays absent and inherits.
+class CustomConfigWriter {
+public:
+    explicit CustomConfigWriter(pugi::xml_node config)
+        : config(config) {}
+
+    template <typename T>
+    void attr(const char *section, const char *name, const T &value, const T &global) {
+        auto node = config.child(section);
+        if (!(node && node.attribute(name)) && value == global)
+            return;
+        if (!node)
+            node = config.append_child(section);
+        auto attribute = node.attribute(name);
+        if (!attribute)
+            attribute = node.append_attribute(name);
+        set(attribute, value);
+    }
+
+    template <typename T>
+    void list(const char *section, const char *name, const char *item, const std::vector<T> &value, const std::vector<T> &global) {
+        auto node = config.child(section);
+        if (!(node && node.child(name)) && value == global)
+            return;
+        if (!node)
+            node = config.append_child(section);
+        node.remove_child(name);
+        auto list_node = node.append_child(name);
+        for (const auto &v : value) {
+            auto text = list_node.append_child(item).append_child(pugi::node_pcdata);
+            if constexpr (std::is_same_v<T, std::string>)
+                text.set_value(v.c_str());
+            else
+                text.set_value(std::to_string(v).c_str());
+        }
+    }
+
+private:
+    static void set(pugi::xml_attribute &attribute, bool value) { attribute.set_value(value); }
+    static void set(pugi::xml_attribute &attribute, int value) { attribute.set_value(value); }
+    static void set(pugi::xml_attribute &attribute, float value) { attribute.set_value(value); }
+    static void set(pugi::xml_attribute &attribute, const std::string &value) { attribute.set_value(value.c_str()); }
+
+    pugi::xml_node config;
+};
+
+} // namespace
+
+bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentConfig &global, const fs::path &config_path, const std::string &app_path) {
     if (app_path.empty())
         return false;
 
     const auto dir = config_path / "config";
     fs::create_directories(dir);
 
-    pugi::xml_document doc;
-    auto decl = doc.append_child(pugi::node_declaration);
-    decl.append_attribute("version") = "1.0";
-    decl.append_attribute("encoding") = "utf-8";
-
-    auto config_child = doc.append_child("config");
-
-    auto core_child = config_child.append_child("core");
-    core_child.append_attribute("modules-mode") = cc.modules_mode;
-    auto lle_child = core_child.append_child("lle-modules");
-    for (const auto &m : cc.lle_modules)
-        lle_child.append_child("module").append_child(pugi::node_pcdata).set_value(m.c_str());
-
-    auto cpu_child = config_child.append_child("cpu");
-    cpu_child.append_attribute("cpu-opt") = cc.cpu_opt;
-
-    auto gpu_child = config_child.append_child("gpu");
-    gpu_child.append_attribute("backend-renderer") = cc.backend_renderer.c_str();
-    gpu_child.append_attribute("gpu-idx") = cc.gpu_idx;
-#ifdef __ANDROID__
-    gpu_child.append_attribute("custom-driver-name") = cc.custom_driver_name.c_str();
-#endif
-    gpu_child.append_attribute("high-accuracy") = cc.high_accuracy;
-    gpu_child.append_attribute("resolution-multiplier") = cc.resolution_multiplier;
-    gpu_child.append_attribute("disable-surface-sync") = cc.disable_surface_sync;
-    gpu_child.append_attribute("screen-filter") = cc.screen_filter.c_str();
-    gpu_child.append_attribute("memory-mapping") = cc.memory_mapping.c_str();
-    gpu_child.append_attribute("v-sync") = cc.v_sync;
-    gpu_child.append_attribute("anisotropic-filtering") = cc.anisotropic_filtering;
-    gpu_child.append_attribute("async-pipeline-compilation") = cc.async_pipeline_compilation;
-    gpu_child.append_attribute("import-textures") = cc.import_textures;
-    gpu_child.append_attribute("export-textures") = cc.export_textures;
-    gpu_child.append_attribute("export-as-png") = cc.export_as_png;
-    gpu_child.append_attribute("fps-hack") = cc.fps_hack;
-    gpu_child.append_attribute("shader-cache") = cc.shader_cache;
-    gpu_child.append_attribute("spirv-shader") = cc.spirv_shader;
-    gpu_child.append_attribute("texture-cache") = cc.texture_cache;
-
-    auto audio_child = config_child.append_child("audio");
-    audio_child.append_attribute("audio-backend") = cc.audio_backend.c_str();
-    audio_child.append_attribute("audio-volume") = cc.audio_volume;
-    audio_child.append_attribute("enable-ngs") = cc.ngs_enable;
-
-    auto system_child = config_child.append_child("system");
-    system_child.append_attribute("pstv-mode") = cc.pstv_mode;
-    system_child.append_attribute("sys-button") = cc.sys_button;
-    system_child.append_attribute("sys-lang") = cc.sys_lang;
-    system_child.append_attribute("sys-date-format") = cc.sys_date_format;
-    system_child.append_attribute("sys-time-format") = cc.sys_time_format;
-    auto ime_child = system_child.append_child("ime-langs");
-    for (const auto &lang : cc.ime_langs)
-        ime_child.append_child("lang").append_child(pugi::node_pcdata).set_value(std::to_string(lang).c_str());
-
-    auto emu_child = config_child.append_child("emulator");
-    emu_child.append_attribute("file-loading-delay") = cc.file_loading_delay;
-    emu_child.append_attribute("stretch-the-display-area") = cc.stretch_the_display_area;
-    emu_child.append_attribute("fullscreen-hd-res-pixel-perfect") = cc.fullscreen_hd_res_pixel_perfect;
-
-    auto debug_child = config_child.append_child("debug");
-    debug_child.append_attribute("log-active-shaders") = cc.log_active_shaders;
-    debug_child.append_attribute("log-uniforms") = cc.log_uniforms;
-    debug_child.append_attribute("color-surface-debug") = cc.color_surface_debug;
-    debug_child.append_attribute("validation-layer") = cc.validation_layer;
-
-    auto network_child = config_child.append_child("network");
-    network_child.append_attribute("psn-signed-in") = cc.psn_signed_in;
-
     const auto custom_cfg_path = get_custom_config_path(config_path, app_path);
+
+    pugi::xml_document doc;
+    // Keep what a hand-written file carries besides settings (declaration, comments).
+    if (!fs::exists(custom_cfg_path) || !doc.load_file(custom_cfg_path.c_str(), pugi::parse_default | pugi::parse_declaration | pugi::parse_comments) || doc.child("config").empty()) {
+        doc.reset();
+        auto decl = doc.append_child(pugi::node_declaration);
+        decl.append_attribute("version") = "1.0";
+        decl.append_attribute("encoding") = "utf-8";
+        doc.append_child("config");
+    }
+
+    CustomConfigWriter w(doc.child("config"));
+
+    w.attr("core", "modules-mode", cc.modules_mode, global.modules_mode);
+    w.list("core", "lle-modules", "module", cc.lle_modules, global.lle_modules);
+
+    w.attr("cpu", "cpu-opt", cc.cpu_opt, global.cpu_opt);
+
+    w.attr("gpu", "backend-renderer", cc.backend_renderer, global.backend_renderer);
+    w.attr("gpu", "gpu-idx", cc.gpu_idx, global.gpu_idx);
+#ifdef __ANDROID__
+    w.attr("gpu", "custom-driver-name", cc.custom_driver_name, global.custom_driver_name);
+#endif
+    w.attr("gpu", "high-accuracy", cc.high_accuracy, global.high_accuracy);
+    w.attr("gpu", "resolution-multiplier", cc.resolution_multiplier, global.resolution_multiplier);
+    w.attr("gpu", "disable-surface-sync", cc.disable_surface_sync, global.disable_surface_sync);
+    w.attr("gpu", "screen-filter", cc.screen_filter, global.screen_filter);
+    w.attr("gpu", "memory-mapping", cc.memory_mapping, global.memory_mapping);
+    w.attr("gpu", "v-sync", cc.v_sync, global.v_sync);
+    w.attr("gpu", "anisotropic-filtering", cc.anisotropic_filtering, global.anisotropic_filtering);
+    w.attr("gpu", "async-pipeline-compilation", cc.async_pipeline_compilation, global.async_pipeline_compilation);
+    w.attr("gpu", "import-textures", cc.import_textures, global.import_textures);
+    w.attr("gpu", "export-textures", cc.export_textures, global.export_textures);
+    w.attr("gpu", "export-as-png", cc.export_as_png, global.export_as_png);
+    w.attr("gpu", "fps-hack", cc.fps_hack, global.fps_hack);
+    w.attr("gpu", "shader-cache", cc.shader_cache, global.shader_cache);
+    w.attr("gpu", "spirv-shader", cc.spirv_shader, global.spirv_shader);
+    w.attr("gpu", "texture-cache", cc.texture_cache, global.texture_cache);
+
+    w.attr("audio", "audio-backend", cc.audio_backend, global.audio_backend);
+    w.attr("audio", "audio-volume", cc.audio_volume, global.audio_volume);
+    w.attr("audio", "enable-ngs", cc.ngs_enable, global.ngs_enable);
+
+    w.attr("system", "pstv-mode", cc.pstv_mode, global.pstv_mode);
+    w.attr("system", "sys-button", cc.sys_button, global.sys_button);
+    w.attr("system", "sys-lang", cc.sys_lang, global.sys_lang);
+    w.attr("system", "sys-date-format", cc.sys_date_format, global.sys_date_format);
+    w.attr("system", "sys-time-format", cc.sys_time_format, global.sys_time_format);
+    w.list("system", "ime-langs", "lang", cc.ime_langs, global.ime_langs);
+
+    w.attr("emulator", "file-loading-delay", cc.file_loading_delay, global.file_loading_delay);
+    w.attr("emulator", "stretch-the-display-area", cc.stretch_the_display_area, global.stretch_the_display_area);
+    w.attr("emulator", "fullscreen-hd-res-pixel-perfect", cc.fullscreen_hd_res_pixel_perfect, global.fullscreen_hd_res_pixel_perfect);
+
+    w.attr("debug", "log-active-shaders", cc.log_active_shaders, global.log_active_shaders);
+    w.attr("debug", "log-uniforms", cc.log_uniforms, global.log_uniforms);
+    w.attr("debug", "color-surface-debug", cc.color_surface_debug, global.color_surface_debug);
+    w.attr("debug", "validation-layer", cc.validation_layer, global.validation_layer);
+
+    w.attr("network", "psn-signed-in", cc.psn_signed_in, global.psn_signed_in);
+
     if (!doc.save_file(custom_cfg_path.c_str())) {
         LOG_ERROR("Failed to save custom config xml for app path: {}", app_path);
         return false;
@@ -382,7 +442,9 @@ void copy_current_config_to_global(Config &cfg) {
 
 void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing) {
     if (!app_path.empty() && (create_custom_if_missing || has_custom_config(config_path, app_path))) {
-        save_custom_config(cfg.current_config, config_path, app_path);
+        Config::CurrentConfig global;
+        copy_global_to_current(global, cfg);
+        save_custom_config(cfg.current_config, global, config_path, app_path);
     } else {
         copy_current_config_to_global(cfg);
     }
