@@ -47,6 +47,7 @@
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLayout>
 #include <QLineEdit>
@@ -191,6 +192,8 @@ SettingsDialog::SettingsDialog(EmuEnvState &emuenv,
 
         m_ui->gb_network_http_section->setVisible(false);
         m_ui->gb_adhoc->setVisible(false);
+
+        setup_override_groups();
     }
 
     const int selected_tab = first_visible_category(m_ui->settingsCategory, m_initial_tab);
@@ -273,7 +276,10 @@ void SettingsDialog::load_config() {
     cfg_copy = emuenv.cfg;
     config::set_current_config(cfg_copy, emuenv.config_path, m_app_path);
     m_config = cfg_copy.current_config;
+    load_config_widgets();
+}
 
+void SettingsDialog::load_config_widgets() {
     switch (m_config.modules_mode) {
     case ModulesMode::AUTOMATIC:
         m_ui->rb_modules_automatic->setChecked(true);
@@ -780,7 +786,8 @@ bool SettingsDialog::commit_changes(bool close_after) {
 
     Config desired;
     build_desired_config(desired);
-    const auto result = app::commit_settings(emuenv, desired, m_app_path);
+    const auto overrides = build_overrides();
+    const auto result = app::commit_settings(emuenv, desired, m_app_path, m_app_path.empty() ? nullptr : &overrides);
     m_config = desired.current_config;
     if (storage_path_changed)
         populate_modules_list();
@@ -1302,7 +1309,12 @@ void SettingsDialog::setup_connections() {
 
 // TODO: Allow this to go from enter to another enter without leaving (widget to widget without setting the default title and description)
 bool SettingsDialog::eventFilter(QObject *watched, QEvent *event) {
-    if (event->type() == QEvent::Enter) {
+    if (event->type() == QEvent::Resize) {
+        for (int i = 0; i < static_cast<int>(m_override_groups.size()); ++i) {
+            if (m_override_groups[i].box == watched)
+                place_override_check(i);
+        }
+    } else if (event->type() == QEvent::Enter) {
         auto *w = qobject_cast<QWidget *>(watched);
         if (w) {
             const QString description = w->property("_desc").toString();
@@ -1424,6 +1436,118 @@ void SettingsDialog::mark_dirty() {
         for (auto *bb : m_button_boxes)
             bb->button(QDialogButtonBox::Apply)->setEnabled(true);
     }
+}
+
+void SettingsDialog::setup_override_groups() {
+    const std::vector<std::pair<QGroupBox *, std::vector<std::string>>> groups = {
+        { m_ui->gb_core_modules_section, { "core/modules-mode", "core/lle-modules" } },
+        { m_ui->gb_cpu_emulation_section, { "cpu/cpu-opt" } },
+        { m_ui->gb_gpu_renderer_section, { "gpu/backend-renderer", "gpu/screen-filter", "gpu/gpu-idx", "gpu/high-accuracy", "gpu/disable-surface-sync", "gpu/v-sync", "gpu/async-pipeline-compilation", "gpu/memory-mapping" } },
+        { m_ui->gb_gpu_quality_section, { "gpu/resolution-multiplier", "gpu/anisotropic-filtering" } },
+        { m_ui->gb_gpu_texture_section, { "gpu/export-textures", "gpu/import-textures", "gpu/export-as-png", "gpu/shader-cache", "gpu/spirv-shader", "gpu/fps-hack" } },
+        { m_ui->gb_audio_output_section, { "audio/audio-backend", "audio/audio-volume" } },
+        { m_ui->gb_audio_features_section, { "audio/enable-ngs" } },
+        { m_ui->gb_console_layout_section, { "system/sys-button", "system/pstv-mode" } },
+        { m_ui->gb_system_region_section, { "system/sys-lang", "system/sys-date-format", "system/sys-time-format", "system/ime-langs" } },
+        { m_ui->gb_emulator_behavior_section, { "gpu/texture-cache" } },
+        { m_ui->gb_emulator_overlay_section, { "emulator/stretch-the-display-area", "emulator/fullscreen-hd-res-pixel-perfect" } },
+        { m_ui->gb_emulator_storage_section, { "emulator/file-loading-delay" } },
+        { m_ui->gb_network_connection_section, { "network/psn-signed-in" } },
+        { m_ui->gb_debug_diagnostics_section, { "debug/log-active-shaders", "debug/log-uniforms", "debug/color-surface-debug", "debug/validation-layer" } },
+    };
+
+    const auto present_keys = config::get_custom_config_keys(emuenv.config_path, m_app_path);
+
+    m_override_groups.reserve(groups.size());
+    for (const auto &entry : groups) {
+        QGroupBox *box = entry.first;
+        const std::vector<std::string> &keys = entry.second;
+        auto *check = new QCheckBox(tr("Override"), box);
+        check->setAutoFillBackground(true);
+        check->setProperty("_desc_title", tr("Override"));
+        check->setProperty("_desc", tr("When checked, this game uses the settings of this section instead of the global ones, "
+                                       "and they are saved in its custom config. When unchecked, the section follows the global settings."));
+        check->installEventFilter(this);
+        box->installEventFilter(this);
+
+        const bool overridden = std::ranges::any_of(keys, [&](const std::string &key) { return present_keys.contains(key); });
+        check->setChecked(overridden);
+
+        const int index = static_cast<int>(m_override_groups.size());
+        m_override_groups.push_back({ box, check, keys });
+        set_override_group_active(index, overridden);
+        place_override_check(index);
+
+        connect(check, &QCheckBox::toggled, this, [this, index](bool checked) {
+            if (!checked)
+                reset_override_group_to_global(index);
+            set_override_group_active(index, checked);
+            mark_dirty();
+        });
+    }
+}
+
+// Greys out (or restores) the direct children of a section, except its Override check. A child that was
+// already disabled on its own, like the LLE modules list in automatic mode, stays disabled when restored.
+void SettingsDialog::set_override_group_active(int index, bool active) {
+    const auto &group = m_override_groups[index];
+    for (auto *child : group.box->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+        if (child == group.check)
+            continue;
+
+        const bool greyed = child->property("_override_greyed").toBool();
+        if (!active && !greyed) {
+            child->setProperty("_override_was_disabled", child->testAttribute(Qt::WA_ForceDisabled));
+            child->setProperty("_override_greyed", true);
+            child->setEnabled(false);
+        } else if (active && greyed) {
+            child->setProperty("_override_greyed", false);
+            if (!child->property("_override_was_disabled").toBool())
+                child->setEnabled(true);
+        }
+    }
+}
+
+// Shows the global values in one section, keeping what the other sections are being edited to.
+void SettingsDialog::reset_override_group_to_global(int index) {
+    Config desired;
+    build_desired_config(desired);
+
+    Config global_cfg;
+    global_cfg = emuenv.cfg;
+    config::set_current_config(global_cfg, emuenv.config_path, {});
+    config::copy_custom_config_keys(desired.current_config, global_cfg.current_config, m_override_groups[index].keys);
+    m_config = desired.current_config;
+
+    // Debugger switches are not part of the config, keep them as they are.
+    const bool log_imports = m_ui->log_imports->isChecked();
+    const bool log_exports = m_ui->log_exports->isChecked();
+    const bool dump_elfs = m_ui->dump_elfs->isChecked();
+
+    load_config_widgets();
+    // The screen filter list is rebuilt from m_config only when it is empty.
+    m_ui->screen_filter_box->clear();
+    update_gpu_visibility();
+
+    m_ui->log_imports->setChecked(log_imports);
+    m_ui->log_exports->setChecked(log_exports);
+    m_ui->dump_elfs->setChecked(dump_elfs);
+}
+
+void SettingsDialog::place_override_check(int index) {
+    const auto &group = m_override_groups[index];
+    const QSize hint = group.check->sizeHint();
+    group.check->setGeometry(group.box->width() - hint.width() - 8, 0, hint.width(), hint.height());
+    group.check->raise();
+}
+
+config::CustomConfigOverrides SettingsDialog::build_overrides() const {
+    config::CustomConfigOverrides overrides;
+    for (const auto &group : m_override_groups) {
+        for (const auto &key : group.keys)
+            overrides[key] = group.check->isChecked();
+    }
+    return overrides;
 }
 
 void SettingsDialog::set_pending_vita_fs_path(const fs::path &vita_fs_path) {

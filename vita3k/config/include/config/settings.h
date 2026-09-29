@@ -20,6 +20,8 @@
 #include <config/state.h>
 
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,13 +45,21 @@ std::vector<RestartRequiredSetting> get_restart_required_settings(
     const Config::CurrentConfig &after);
 
 bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path, const std::string &app_path);
-bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentConfig &global, const fs::path &config_path, const std::string &app_path);
+// Keys are "<section>/<name>" as in the custom config file, e.g. "gpu/resolution-multiplier".
+// Maps a key to whether a custom config overrides it; keys it does not name keep the default rule.
+using CustomConfigOverrides = std::map<std::string, bool>;
+
+bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentConfig &global, const fs::path &config_path, const std::string &app_path,
+    const CustomConfigOverrides *overrides = nullptr);
+std::set<std::string> get_custom_config_keys(const fs::path &config_path, const std::string &app_path);
+void copy_custom_config_keys(Config::CurrentConfig &dst, const Config::CurrentConfig &src, const std::vector<std::string> &keys);
 bool delete_custom_config(const fs::path &config_path, const std::string &app_path);
 int delete_all_custom_configs(const fs::path &config_path);
 bool has_custom_config(const fs::path &config_path, const std::string &app_path);
 void set_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path);
 void copy_current_config_to_global(Config &cfg);
-void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing = false);
+void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing = false,
+    const CustomConfigOverrides *overrides = nullptr);
 std::vector<std::pair<std::string, bool>> get_modules_list(
     const fs::path &vita_fs_path,
     const std::vector<std::string> &lle_modules);

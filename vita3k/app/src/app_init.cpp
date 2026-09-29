@@ -697,7 +697,8 @@ void apply_runtime_settings(EmuEnvState &emuenv) {
     app::sync_perf_overlay_config(emuenv);
 }
 
-SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_cfg, const std::string &scope_app_path) {
+SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_cfg, const std::string &scope_app_path,
+    const config::CustomConfigOverrides *overrides) {
     SettingsCommitResult result;
     const bool scope_is_custom = !scope_app_path.empty();
     const bool active_profile = applies_to_active_profile(emuenv, scope_app_path);
@@ -716,7 +717,7 @@ SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_
         Config persisted_cfg;
         persisted_cfg = emuenv.cfg;
         persisted_cfg.current_config = desired_cfg.current_config;
-        config::save_current_config(persisted_cfg, emuenv.config_path, scope_app_path, true);
+        config::save_current_config(persisted_cfg, emuenv.config_path, scope_app_path, true, overrides);
 
         result.custom_config_created = !had_custom_config;
         result.active_source_is_custom = true;

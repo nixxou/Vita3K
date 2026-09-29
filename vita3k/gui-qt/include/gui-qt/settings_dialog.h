@@ -29,6 +29,8 @@
 
 struct EmuEnvState;
 class GuiSettings;
+class QCheckBox;
+class QGroupBox;
 class SettingsDialogTooltips;
 class ThemeManager;
 
@@ -89,6 +91,7 @@ private:
     bool prompt_restart_if_needed(const app::SettingsCommitResult &result, bool close_after);
     void apply_text_overrides();
     void load_config();
+    void load_config_widgets();
     void build_desired_config(Config &desired) const;
     void populate_modules_list();
     void populate_tracy_modules_list();
@@ -106,6 +109,11 @@ private:
     void update_file_loading_delay_label();
     void update_http_retry_labels();
     void mark_dirty();
+    void setup_override_groups();
+    void set_override_group_active(int index, bool active);
+    void reset_override_group_to_global(int index);
+    void place_override_check(int index);
+    config::CustomConfigOverrides build_overrides() const;
     void set_pending_vita_fs_path(const fs::path &vita_fs_path);
     void set_description(QWidget *tab, const QString &title, const QString &text);
     void add_stylesheets(const QString &preferred_name = {});
@@ -116,6 +124,15 @@ private:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     std::vector<QDialogButtonBox *> m_button_boxes;
+
+    // Custom config only: a section box with an "Override" check owning some custom config keys.
+    // Unchecked, the section is greyed out, shows the global values and its keys leave the custom config.
+    struct OverrideGroup {
+        QGroupBox *box;
+        QCheckBox *check;
+        std::vector<std::string> keys;
+    };
+    std::vector<OverrideGroup> m_override_groups;
 
     EmuEnvState &emuenv;
     std::shared_ptr<GuiSettings> m_gui_settings;

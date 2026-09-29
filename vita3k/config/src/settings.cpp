@@ -25,6 +25,8 @@
 #include <pugixml.hpp>
 
 #include <algorithm>
+#include <cstdlib>
+#include <string_view>
 #include <type_traits>
 
 namespace config {
@@ -152,28 +154,204 @@ static fs::path get_custom_config_path(const fs::path &config_path, const std::s
     return config_path / "config" / fmt::format("config_{}.xml", app_path);
 }
 
+namespace {
+
+// Every per-app setting and its place in a custom config file ("<section> <name>=..."). The visitor gets
+// (section, name, field of a, field of b), so this one list drives loading, saving and copying.
+template <typename A, typename B, typename Visitor>
+void for_each_custom_field(A &a, B &b, Visitor &&visit) {
+    visit("core", "modules-mode", a.modules_mode, b.modules_mode);
+    visit("core", "lle-modules", a.lle_modules, b.lle_modules);
+
+    visit("cpu", "cpu-opt", a.cpu_opt, b.cpu_opt);
+
+    visit("gpu", "backend-renderer", a.backend_renderer, b.backend_renderer);
+    visit("gpu", "gpu-idx", a.gpu_idx, b.gpu_idx);
+#ifdef __ANDROID__
+    visit("gpu", "custom-driver-name", a.custom_driver_name, b.custom_driver_name);
+#endif
+    visit("gpu", "high-accuracy", a.high_accuracy, b.high_accuracy);
+    visit("gpu", "resolution-multiplier", a.resolution_multiplier, b.resolution_multiplier);
+    visit("gpu", "disable-surface-sync", a.disable_surface_sync, b.disable_surface_sync);
+    visit("gpu", "screen-filter", a.screen_filter, b.screen_filter);
+    visit("gpu", "memory-mapping", a.memory_mapping, b.memory_mapping);
+    visit("gpu", "v-sync", a.v_sync, b.v_sync);
+    visit("gpu", "anisotropic-filtering", a.anisotropic_filtering, b.anisotropic_filtering);
+    visit("gpu", "async-pipeline-compilation", a.async_pipeline_compilation, b.async_pipeline_compilation);
+    visit("gpu", "import-textures", a.import_textures, b.import_textures);
+    visit("gpu", "export-textures", a.export_textures, b.export_textures);
+    visit("gpu", "export-as-png", a.export_as_png, b.export_as_png);
+    visit("gpu", "fps-hack", a.fps_hack, b.fps_hack);
+    visit("gpu", "shader-cache", a.shader_cache, b.shader_cache);
+    visit("gpu", "spirv-shader", a.spirv_shader, b.spirv_shader);
+    visit("gpu", "texture-cache", a.texture_cache, b.texture_cache);
+
+    visit("audio", "audio-backend", a.audio_backend, b.audio_backend);
+    visit("audio", "audio-volume", a.audio_volume, b.audio_volume);
+    visit("audio", "enable-ngs", a.ngs_enable, b.ngs_enable);
+
+    visit("system", "pstv-mode", a.pstv_mode, b.pstv_mode);
+    visit("system", "sys-button", a.sys_button, b.sys_button);
+    visit("system", "sys-lang", a.sys_lang, b.sys_lang);
+    visit("system", "sys-date-format", a.sys_date_format, b.sys_date_format);
+    visit("system", "sys-time-format", a.sys_time_format, b.sys_time_format);
+    visit("system", "ime-langs", a.ime_langs, b.ime_langs);
+
+    visit("emulator", "file-loading-delay", a.file_loading_delay, b.file_loading_delay);
+    visit("emulator", "stretch-the-display-area", a.stretch_the_display_area, b.stretch_the_display_area);
+    visit("emulator", "fullscreen-hd-res-pixel-perfect", a.fullscreen_hd_res_pixel_perfect, b.fullscreen_hd_res_pixel_perfect);
+
+    visit("debug", "log-active-shaders", a.log_active_shaders, b.log_active_shaders);
+    visit("debug", "log-uniforms", a.log_uniforms, b.log_uniforms);
+    visit("debug", "color-surface-debug", a.color_surface_debug, b.color_surface_debug);
+    visit("debug", "validation-layer", a.validation_layer, b.validation_layer);
+
+    visit("network", "psn-signed-in", a.psn_signed_in, b.psn_signed_in);
+}
+
+template <typename T>
+constexpr bool is_list_v = false;
+template <typename T>
+constexpr bool is_list_v<std::vector<T>> = true;
+
+std::string custom_key(const char *section, const char *name) {
+    return fmt::format("{}/{}", section, name);
+}
+
+// Lists are stored as child elements, one item each.
+const char *list_item_name(const std::vector<std::string> &) {
+    return "module";
+}
+
+const char *list_item_name(const std::vector<uint64_t> &) {
+    return "lang";
+}
+
 // A custom config only overrides what it names: an absent attribute (or list) keeps the global value.
-static void read_attr(const pugi::xml_node &node, const char *name, bool &out) {
+// Unknown sections and attributes are skipped.
+void read_value(const pugi::xml_node &node, const char *name, bool &out) {
     if (const auto attr = node.attribute(name))
         out = attr.as_bool();
 }
 
-static void read_attr(const pugi::xml_node &node, const char *name, int &out) {
+void read_value(const pugi::xml_node &node, const char *name, int &out) {
     if (const auto attr = node.attribute(name))
         out = attr.as_int();
 }
 
-static void read_attr(const pugi::xml_node &node, const char *name, float &out) {
+void read_value(const pugi::xml_node &node, const char *name, float &out) {
     if (const auto attr = node.attribute(name))
         out = attr.as_float();
 }
 
-// An empty string is never a valid value for these settings, so it inherits too.
-static void read_attr(const pugi::xml_node &node, const char *name, std::string &out) {
+void read_value(const pugi::xml_node &node, const char *name, std::string &out) {
     const auto attr = node.attribute(name);
-    if (attr && *attr.as_string())
+    if (!attr)
+        return;
+    // An empty string is not a valid renderer, filter, mapping or backend, so it inherits too.
+    // An empty custom driver name is a real choice (no custom driver).
+    if (*attr.as_string() || std::string_view(name) == "custom-driver-name")
         out = attr.as_string();
 }
+
+void read_value(const pugi::xml_node &node, const char *name, std::vector<std::string> &out) {
+    const auto list = node.child(name);
+    if (!list)
+        return;
+    out.clear();
+    for (const auto &item : list)
+        out.emplace_back(item.text().as_string());
+}
+
+void read_value(const pugi::xml_node &node, const char *name, std::vector<uint64_t> &out) {
+    const auto list = node.child(name);
+    if (!list)
+        return;
+    out.clear();
+    for (const auto &item : list) {
+        const char *text = item.text().as_string();
+        char *end = nullptr;
+        const auto value = std::strtoull(text, &end, 10);
+        if (end != text)
+            out.push_back(value);
+    }
+    if (out.empty())
+        out.push_back(4);
+}
+
+// Edits a custom config in place. With an override map, a key it names is written when true and removed
+// when false. Any other key is written when the file already names it (the user pinned it) or when it
+// differs from the global value, and is left absent otherwise so it inherits.
+class CustomConfigWriter {
+public:
+    CustomConfigWriter(pugi::xml_node config, const CustomConfigOverrides *overrides)
+        : config(config)
+        , overrides(overrides) {}
+
+    template <typename T>
+    void field(const char *section, const char *name, const T &value, const T &global) {
+        auto node = config.child(section);
+        const bool named = node && (is_list_v<T> ? static_cast<bool>(node.child(name)) : static_cast<bool>(node.attribute(name)));
+
+        bool write = named || !(value == global);
+        if (overrides) {
+            if (const auto it = overrides->find(custom_key(section, name)); it != overrides->end())
+                write = it->second;
+        }
+
+        if (!write) {
+            if (named)
+                remove(node, name, is_list_v<T>);
+            return;
+        }
+
+        if (!node)
+            node = config.append_child(section);
+        set(node, name, value);
+    }
+
+private:
+    void remove(pugi::xml_node node, const char *name, bool list) {
+        if (list)
+            node.remove_child(name);
+        else
+            node.remove_attribute(name);
+        if (!node.first_attribute() && !node.first_child())
+            config.remove_child(node);
+    }
+
+    static pugi::xml_attribute attribute(pugi::xml_node node, const char *name) {
+        auto attr = node.attribute(name);
+        return attr ? attr : node.append_attribute(name);
+    }
+
+    static void set(pugi::xml_node node, const char *name, bool value) { attribute(node, name).set_value(value); }
+    static void set(pugi::xml_node node, const char *name, int value) { attribute(node, name).set_value(value); }
+    static void set(pugi::xml_node node, const char *name, float value) { attribute(node, name).set_value(value); }
+    static void set(pugi::xml_node node, const char *name, const std::string &value) { attribute(node, name).set_value(value.c_str()); }
+
+    template <typename T>
+    static void set(pugi::xml_node node, const char *name, const std::vector<T> &value) {
+        node.remove_child(name);
+        auto list = node.append_child(name);
+        for (const auto &v : value) {
+            auto text = list.append_child(list_item_name(value)).append_child(pugi::node_pcdata);
+            if constexpr (std::is_same_v<T, std::string>)
+                text.set_value(v.c_str());
+            else
+                text.set_value(std::to_string(v).c_str());
+        }
+    }
+
+    pugi::xml_node config;
+    const CustomConfigOverrides *overrides;
+};
+
+bool load_custom_config_doc(pugi::xml_document &doc, const fs::path &custom_cfg_path) {
+    return fs::exists(custom_cfg_path) && doc.load_file(custom_cfg_path.c_str()) && !doc.child("config").empty();
+}
+
+} // namespace
 
 bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path, const std::string &app_path) {
     if (app_path.empty())
@@ -191,127 +369,45 @@ bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path,
     }
 
     const auto config_child = doc.child("config");
-
-    const auto core = config_child.child("core");
-    read_attr(core, "modules-mode", out.modules_mode);
-    if (const auto lle = core.child("lle-modules")) {
-        out.lle_modules.clear();
-        for (const auto &m : lle)
-            out.lle_modules.emplace_back(m.text().as_string());
-    }
-
-    read_attr(config_child.child("cpu"), "cpu-opt", out.cpu_opt);
-
-    const auto gpu = config_child.child("gpu");
-    read_attr(gpu, "backend-renderer", out.backend_renderer);
-    read_attr(gpu, "gpu-idx", out.gpu_idx);
-#ifdef __ANDROID__
-    if (const auto attr = gpu.attribute("custom-driver-name"))
-        out.custom_driver_name = attr.as_string();
-#endif
-    read_attr(gpu, "high-accuracy", out.high_accuracy);
-    read_attr(gpu, "resolution-multiplier", out.resolution_multiplier);
-    read_attr(gpu, "disable-surface-sync", out.disable_surface_sync);
-    read_attr(gpu, "screen-filter", out.screen_filter);
-    read_attr(gpu, "memory-mapping", out.memory_mapping);
-    read_attr(gpu, "v-sync", out.v_sync);
-    read_attr(gpu, "anisotropic-filtering", out.anisotropic_filtering);
-    read_attr(gpu, "async-pipeline-compilation", out.async_pipeline_compilation);
-    read_attr(gpu, "import-textures", out.import_textures);
-    read_attr(gpu, "export-textures", out.export_textures);
-    read_attr(gpu, "export-as-png", out.export_as_png);
-    read_attr(gpu, "fps-hack", out.fps_hack);
-    read_attr(gpu, "shader-cache", out.shader_cache);
-    read_attr(gpu, "spirv-shader", out.spirv_shader);
-    read_attr(gpu, "texture-cache", out.texture_cache);
-
-    const auto audio = config_child.child("audio");
-    read_attr(audio, "audio-backend", out.audio_backend);
-    read_attr(audio, "audio-volume", out.audio_volume);
-    read_attr(audio, "enable-ngs", out.ngs_enable);
-
-    const auto sys = config_child.child("system");
-    read_attr(sys, "pstv-mode", out.pstv_mode);
-    read_attr(sys, "sys-button", out.sys_button);
-    read_attr(sys, "sys-lang", out.sys_lang);
-    read_attr(sys, "sys-date-format", out.sys_date_format);
-    read_attr(sys, "sys-time-format", out.sys_time_format);
-    if (const auto ime = sys.child("ime-langs")) {
-        out.ime_langs.clear();
-        for (const auto &lang : ime)
-            out.ime_langs.push_back(std::stoull(lang.text().as_string()));
-        if (out.ime_langs.empty())
-            out.ime_langs.push_back(4);
-    }
-
-    const auto emu = config_child.child("emulator");
-    read_attr(emu, "file-loading-delay", out.file_loading_delay);
-    read_attr(emu, "stretch-the-display-area", out.stretch_the_display_area);
-    read_attr(emu, "fullscreen-hd-res-pixel-perfect", out.fullscreen_hd_res_pixel_perfect);
-
-    const auto dbg = config_child.child("debug");
-    read_attr(dbg, "log-active-shaders", out.log_active_shaders);
-    read_attr(dbg, "log-uniforms", out.log_uniforms);
-    read_attr(dbg, "color-surface-debug", out.color_surface_debug);
-    read_attr(dbg, "validation-layer", out.validation_layer);
-
-    read_attr(config_child.child("network"), "psn-signed-in", out.psn_signed_in);
+    for_each_custom_field(out, out, [&](const char *section, const char *name, auto &value, auto &) {
+        read_value(config_child.child(section), name, value);
+    });
 
     return true;
 }
 
-namespace {
+std::set<std::string> get_custom_config_keys(const fs::path &config_path, const std::string &app_path) {
+    std::set<std::string> keys;
+    if (app_path.empty())
+        return keys;
 
-// Edits a custom config in place: a setting is written when the file already names it (the user
-// pinned it) or when it differs from the global value; everything else stays absent and inherits.
-class CustomConfigWriter {
-public:
-    explicit CustomConfigWriter(pugi::xml_node config)
-        : config(config) {}
+    pugi::xml_document doc;
+    if (!load_custom_config_doc(doc, get_custom_config_path(config_path, app_path)))
+        return keys;
 
-    template <typename T>
-    void attr(const char *section, const char *name, const T &value, const T &global) {
-        auto node = config.child(section);
-        if (!(node && node.attribute(name)) && value == global)
-            return;
-        if (!node)
-            node = config.append_child(section);
-        auto attribute = node.attribute(name);
-        if (!attribute)
-            attribute = node.append_attribute(name);
-        set(attribute, value);
-    }
+    const auto config_child = doc.child("config");
+    Config::CurrentConfig unused;
+    for_each_custom_field(unused, unused, [&](const char *section, const char *name, auto &value, auto &) {
+        const auto node = config_child.child(section);
+        const bool named = is_list_v<std::remove_reference_t<decltype(value)>>
+            ? static_cast<bool>(node.child(name))
+            : static_cast<bool>(node.attribute(name));
+        if (named)
+            keys.insert(custom_key(section, name));
+    });
 
-    template <typename T>
-    void list(const char *section, const char *name, const char *item, const std::vector<T> &value, const std::vector<T> &global) {
-        auto node = config.child(section);
-        if (!(node && node.child(name)) && value == global)
-            return;
-        if (!node)
-            node = config.append_child(section);
-        node.remove_child(name);
-        auto list_node = node.append_child(name);
-        for (const auto &v : value) {
-            auto text = list_node.append_child(item).append_child(pugi::node_pcdata);
-            if constexpr (std::is_same_v<T, std::string>)
-                text.set_value(v.c_str());
-            else
-                text.set_value(std::to_string(v).c_str());
-        }
-    }
+    return keys;
+}
 
-private:
-    static void set(pugi::xml_attribute &attribute, bool value) { attribute.set_value(value); }
-    static void set(pugi::xml_attribute &attribute, int value) { attribute.set_value(value); }
-    static void set(pugi::xml_attribute &attribute, float value) { attribute.set_value(value); }
-    static void set(pugi::xml_attribute &attribute, const std::string &value) { attribute.set_value(value.c_str()); }
+void copy_custom_config_keys(Config::CurrentConfig &dst, const Config::CurrentConfig &src, const std::vector<std::string> &keys) {
+    for_each_custom_field(dst, src, [&](const char *section, const char *name, auto &to, const auto &from) {
+        if (std::ranges::contains(keys, custom_key(section, name)))
+            to = from;
+    });
+}
 
-    pugi::xml_node config;
-};
-
-} // namespace
-
-bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentConfig &global, const fs::path &config_path, const std::string &app_path) {
+bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentConfig &global, const fs::path &config_path, const std::string &app_path,
+    const CustomConfigOverrides *overrides) {
     if (app_path.empty())
         return false;
 
@@ -321,7 +417,7 @@ bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentCo
     const auto custom_cfg_path = get_custom_config_path(config_path, app_path);
 
     pugi::xml_document doc;
-    // Keep what a hand-written file carries besides settings (declaration, comments).
+    // Keep what a hand-written file carries besides settings (declaration, comments, unknown keys).
     if (!fs::exists(custom_cfg_path) || !doc.load_file(custom_cfg_path.c_str(), pugi::parse_default | pugi::parse_declaration | pugi::parse_comments) || doc.child("config").empty()) {
         doc.reset();
         auto decl = doc.append_child(pugi::node_declaration);
@@ -330,55 +426,10 @@ bool save_custom_config(const Config::CurrentConfig &cc, const Config::CurrentCo
         doc.append_child("config");
     }
 
-    CustomConfigWriter w(doc.child("config"));
-
-    w.attr("core", "modules-mode", cc.modules_mode, global.modules_mode);
-    w.list("core", "lle-modules", "module", cc.lle_modules, global.lle_modules);
-
-    w.attr("cpu", "cpu-opt", cc.cpu_opt, global.cpu_opt);
-
-    w.attr("gpu", "backend-renderer", cc.backend_renderer, global.backend_renderer);
-    w.attr("gpu", "gpu-idx", cc.gpu_idx, global.gpu_idx);
-#ifdef __ANDROID__
-    w.attr("gpu", "custom-driver-name", cc.custom_driver_name, global.custom_driver_name);
-#endif
-    w.attr("gpu", "high-accuracy", cc.high_accuracy, global.high_accuracy);
-    w.attr("gpu", "resolution-multiplier", cc.resolution_multiplier, global.resolution_multiplier);
-    w.attr("gpu", "disable-surface-sync", cc.disable_surface_sync, global.disable_surface_sync);
-    w.attr("gpu", "screen-filter", cc.screen_filter, global.screen_filter);
-    w.attr("gpu", "memory-mapping", cc.memory_mapping, global.memory_mapping);
-    w.attr("gpu", "v-sync", cc.v_sync, global.v_sync);
-    w.attr("gpu", "anisotropic-filtering", cc.anisotropic_filtering, global.anisotropic_filtering);
-    w.attr("gpu", "async-pipeline-compilation", cc.async_pipeline_compilation, global.async_pipeline_compilation);
-    w.attr("gpu", "import-textures", cc.import_textures, global.import_textures);
-    w.attr("gpu", "export-textures", cc.export_textures, global.export_textures);
-    w.attr("gpu", "export-as-png", cc.export_as_png, global.export_as_png);
-    w.attr("gpu", "fps-hack", cc.fps_hack, global.fps_hack);
-    w.attr("gpu", "shader-cache", cc.shader_cache, global.shader_cache);
-    w.attr("gpu", "spirv-shader", cc.spirv_shader, global.spirv_shader);
-    w.attr("gpu", "texture-cache", cc.texture_cache, global.texture_cache);
-
-    w.attr("audio", "audio-backend", cc.audio_backend, global.audio_backend);
-    w.attr("audio", "audio-volume", cc.audio_volume, global.audio_volume);
-    w.attr("audio", "enable-ngs", cc.ngs_enable, global.ngs_enable);
-
-    w.attr("system", "pstv-mode", cc.pstv_mode, global.pstv_mode);
-    w.attr("system", "sys-button", cc.sys_button, global.sys_button);
-    w.attr("system", "sys-lang", cc.sys_lang, global.sys_lang);
-    w.attr("system", "sys-date-format", cc.sys_date_format, global.sys_date_format);
-    w.attr("system", "sys-time-format", cc.sys_time_format, global.sys_time_format);
-    w.list("system", "ime-langs", "lang", cc.ime_langs, global.ime_langs);
-
-    w.attr("emulator", "file-loading-delay", cc.file_loading_delay, global.file_loading_delay);
-    w.attr("emulator", "stretch-the-display-area", cc.stretch_the_display_area, global.stretch_the_display_area);
-    w.attr("emulator", "fullscreen-hd-res-pixel-perfect", cc.fullscreen_hd_res_pixel_perfect, global.fullscreen_hd_res_pixel_perfect);
-
-    w.attr("debug", "log-active-shaders", cc.log_active_shaders, global.log_active_shaders);
-    w.attr("debug", "log-uniforms", cc.log_uniforms, global.log_uniforms);
-    w.attr("debug", "color-surface-debug", cc.color_surface_debug, global.color_surface_debug);
-    w.attr("debug", "validation-layer", cc.validation_layer, global.validation_layer);
-
-    w.attr("network", "psn-signed-in", cc.psn_signed_in, global.psn_signed_in);
+    CustomConfigWriter writer(doc.child("config"), overrides);
+    for_each_custom_field(cc, global, [&](const char *section, const char *name, const auto &value, const auto &global_value) {
+        writer.field(section, name, value, global_value);
+    });
 
     if (!doc.save_file(custom_cfg_path.c_str())) {
         LOG_ERROR("Failed to save custom config xml for app path: {}", app_path);
@@ -440,11 +491,12 @@ void copy_current_config_to_global(Config &cfg) {
     copy_current_to_global(cfg, cfg.current_config);
 }
 
-void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing) {
+void save_current_config(Config &cfg, const fs::path &config_path, const std::string &app_path, bool create_custom_if_missing,
+    const CustomConfigOverrides *overrides) {
     if (!app_path.empty() && (create_custom_if_missing || has_custom_config(config_path, app_path))) {
         Config::CurrentConfig global;
         copy_global_to_current(global, cfg);
-        save_custom_config(cfg.current_config, global, config_path, app_path);
+        save_custom_config(cfg.current_config, global, config_path, app_path, overrides);
     } else {
         copy_current_config_to_global(cfg);
     }

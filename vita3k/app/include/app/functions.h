@@ -73,7 +73,9 @@ void reset_app_state(EmuEnvState &state);
 bool late_init(EmuEnvState &state);
 void apply_renderer_config(EmuEnvState &emuenv);
 void apply_runtime_settings(EmuEnvState &emuenv);
-SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_cfg, const std::string &scope_app_path = {});
+// With a custom scope, overrides tells which keys the custom config keeps (see config::save_custom_config).
+SettingsCommitResult commit_settings(EmuEnvState &emuenv, const Config &desired_cfg, const std::string &scope_app_path = {},
+    const config::CustomConfigOverrides *overrides = nullptr);
 SettingsCommitResult delete_custom_settings(EmuEnvState &emuenv, const std::string &scope_app_path);
 void set_current_config(EmuEnvState &emuenv, const std::string &app_path);
 void destroy(EmuEnvState &emuenv);
