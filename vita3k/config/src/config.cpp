@@ -386,9 +386,7 @@ ExitCode init_config(Config &cfg, int argc, char **argv, const Root &root_paths,
     config->add_flag("--fullscreen,-F", command_line.fullscreen, "Start the emulator in fullscreen mode.")
         ->group("YML");
 
-    config->add_option("--config-override", command_line.config_override, "Per-app settings for the app launched from the command line, as JSON shaped like its custom config.
-The app's custom config is ignored, global settings apply to the rest, nothing is saved.
-Example: --config-override \"{\\\"gpu\\\": {\\\"resolution-multiplier\\\": 3}}\"")
+    config->add_option("--config-override", command_line.config_override, "Per-app settings for the app launched from the command line, as JSON shaped like its custom config.\nThe app's custom config is ignored, global settings apply to the rest, nothing is saved.\nExample: --config-override \"{\\\"gpu\\\": {\\\"resolution-multiplier\\\": 3}}\"")
         ->group("YML");
 
     std::vector<std::string> lle_modules{};
